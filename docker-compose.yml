@@ -1,0 +1,150 @@
+version: '3.8'
+
+services:
+  # ==========================================
+  # INFRASTRUCTURE TIER
+  # ==========================================
+
+  # 1. Relational Database mapped to port 5434!
+  postgres:
+    image: postgres:15-alpine
+    container_name: assetflow-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password123
+      POSTGRES_DB: assetflow_db
+    ports:
+      - "5434:5432" 
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+  # 2. NoSQL Database
+  mongodb:
+    image: mongo:6-jammy
+    container_name: assetflow-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  # 3. Message Broker
+  redis:
+    image: redis:7-alpine
+    container_name: assetflow-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  # 4. S3-Compatible Object Storage
+  minio:
+    image: minio/minio
+    container_name: assetflow-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: password123
+    ports:
+      - "9000:9000" 
+      - "9001:9001" 
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+
+  # 5. MinIO Client (Auto-creates the 'raw-assets' bucket!)
+  minio-setup:
+    image: minio/mc
+    container_name: assetflow-minio-setup
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      sleep 5;
+      /usr/bin/mc alias set myminio http://minio:9000 admin password123;
+      /usr/bin/mc mb myminio/raw-assets --ignore-existing;
+      /usr/bin/mc anonymous set download myminio/raw-assets;
+      exit 0;
+      "
+
+  # ==========================================
+  # APPLICATION TIER
+  # ==========================================
+
+  # 6. API Gateway
+  api-gateway:
+    build: ./api-gateway
+    container_name: assetflow-api
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    depends_on:
+      - postgres
+      - mongodb
+      - redis
+      - minio
+    environment:
+      # Notice how 127.0.0.1 is replaced by the exact container names!
+      PORT: 5000
+      DATABASE_URL: "postgresql://admin:password123@postgres:5432/assetflow_db?schema=public"
+      MONGO_URI: "mongodb://mongodb:27017/assetflow_logs"
+      REDIS_URL: "redis://redis:6379"
+      MINIO_ENDPOINT: "minio"
+      MINIO_PORT: 9000
+      MINIO_ACCESS_KEY: "admin"
+      MINIO_SECRET_KEY: "password123"
+      JWT_SECRET: "super_secret_assetflow_key_2026"
+
+  # 7. OCR Worker (Multi-Format Extraction)
+  ocr-worker:
+    build: ./workers
+    container_name: assetflow-ocr-worker
+    restart: unless-stopped
+    depends_on:
+      - redis
+      - minio
+      - postgres
+      - mongodb
+    command: node ocrWorker.js
+    environment:
+      DATABASE_URL: "postgresql://admin:password123@postgres:5432/assetflow_db?schema=public"
+      MONGO_URI: "mongodb://mongodb:27017/assetflow_logs"
+      REDIS_URL: "redis://redis:6379"
+      MINIO_ENDPOINT: "minio"
+      MINIO_PORT: 9000
+      MINIO_ACCESS_KEY: "admin"
+      MINIO_SECRET_KEY: "password123"
+
+  # 8. Webhook Worker (DLQ & Retries)
+  webhook-worker:
+    build: ./workers
+    container_name: assetflow-webhook-worker
+    restart: unless-stopped
+    depends_on:
+      - redis
+      - mongodb
+    command: node webhookWorker.js
+    environment:
+      MONGO_URI: "mongodb://mongodb:27017/assetflow_logs"
+      REDIS_URL: "redis://redis:6379"
+      TEST_WEBHOOK_URL: "https://webhook.site/a5bbd524-ddec-4a85-b052-07198e5312b9"
+      JWT_SECRET: "super_secret_assetflow_key_2026"
+
+  # 9. Next.js Developer Dashboard
+  frontend-dashboard:
+    build: ./developer-dashboard
+    container_name: assetflow-dashboard
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api-gateway
+
+# Persistent storage mapping
+volumes:
+  pg_data:
+  mongo_data:
+  redis_data:
+  minio_data:

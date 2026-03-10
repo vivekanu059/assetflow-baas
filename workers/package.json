@@ -1,0 +1,27 @@
+{
+  "name": "workers",
+  "version": "1.0.0",
+  "description": "",
+  "main": "ocrWorker.js",
+  "scripts": {
+    "dev": "nodemon ocrWorker.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@prisma/adapter-pg": "^7.4.2",
+    "@prisma/client": "^7.4.2",
+    "dotenv": "^17.3.1",
+    "minio": "^8.0.7",
+    "mongoose": "^9.2.3",
+    "pdf-extraction": "^1.0.2",
+    "pg": "^8.19.0",
+    "redis": "^5.11.0",
+    "tesseract.js": "^7.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}
