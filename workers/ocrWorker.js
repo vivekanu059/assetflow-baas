@@ -18,8 +18,23 @@ const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
-const redisClient = createClient({ url: process.env.REDIS_URL });
-redisClient.on('error', (err) => console.error('Redis Error', err));
+const redisClient = createClient({ 
+  url: process.env.REDIS_URL,
+  pingInterval: 1000 * 60 * 2, // 🛡️ Ping every 2 minutes to keep Upstash awake
+  socket: {
+    reconnectStrategy: (retries) => {
+      console.log(`⚠️ Redis connection dropped. Reconnecting... (Attempt ${retries})`);
+      // Reconnect with a slight delay so we don't spam the server
+      return Math.min(retries * 100, 3000); 
+    }
+  }
+});
+
+redisClient.on('error', (err) => {
+  // Only log real errors, ignore the expected socket closed warnings
+  if (err.name === 'SocketClosedUnexpectedlyError') return;
+  console.error('❌ Redis Error:', err);
+});
 
 // 1. Bulletproof the endpoint by automatically stripping https:// or http://
 const cleanEndpoint = process.env.MINIO_ENDPOINT 
