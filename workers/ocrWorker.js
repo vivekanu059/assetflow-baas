@@ -1,3 +1,5 @@
+import http from 'http';
+
 import Tesseract from 'tesseract.js';
 import { createClient } from 'redis';
 import * as Minio from 'minio';
@@ -144,3 +146,14 @@ async function startWorker() {
 }
 
 startWorker();
+
+
+// -------------------------------------------------
+// Render Free Tier Hack: Bind to a port so Render 
+// thinks this is a website and doesn't kill it!
+// -------------------------------------------------
+const PORT = process.env.PORT || 10000;
+http.createServer((req, res) => {
+  res.writeHead(200);
+  res.end('OCR Worker is actively listening to Redis!');
+}).listen(PORT, () => console.log(`🛡️ Render Free Tier Hack active on port ${PORT}`));
