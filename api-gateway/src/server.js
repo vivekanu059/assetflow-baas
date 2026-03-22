@@ -40,8 +40,14 @@ export const redisClient = createClient({
 });
 
 redisClient.on('error', (err) => {
-  // Only log real errors, ignore the expected socket closed warnings
-  if (err.name === 'SocketClosedUnexpectedlyError') return;
+  // Convert the whole error to a string to catch the phrase anywhere
+  const errorString = String(err);
+  
+  // Aggressively filter out Upstash's serverless disconnect noise
+  if (errorString.includes('Socket closed unexpectedly') || errorString.includes('SocketClosedUnexpectedlyError')) {
+    return; // Silently ignore it. The reconnectStrategy is already handling it!
+  }
+  
   console.error('❌ Redis Error:', err);
 });
 
