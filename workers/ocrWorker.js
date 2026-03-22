@@ -21,10 +21,16 @@ const prisma = new PrismaClient({ adapter });
 const redisClient = createClient({ url: process.env.REDIS_URL });
 redisClient.on('error', (err) => console.error('Redis Error', err));
 
+// 1. Bulletproof the endpoint by automatically stripping https:// or http://
+const cleanEndpoint = process.env.MINIO_ENDPOINT 
+  ? process.env.MINIO_ENDPOINT.replace(/^https?:\/\//, '') 
+  : '127.0.0.1';
+
+// 2. Initialize MinIO
 const minioClient = new Minio.Client({
-  endPoint: process.env.MINIO_ENDPOINT,
-  port: parseInt(process.env.MINIO_PORT),
-  useSSL: process.env.MINIO_PORT === '443',
+  endPoint: cleanEndpoint,
+  port: parseInt(process.env.MINIO_PORT || '9000'),
+  useSSL: process.env.MINIO_PORT === '443', 
   accessKey: process.env.MINIO_ACCESS_KEY,
   secretKey: process.env.MINIO_SECRET_KEY,
 });
