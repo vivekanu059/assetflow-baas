@@ -27,11 +27,23 @@ export const prisma = new PrismaClient({ adapter });
 // -------------------------------------------------
 // 2. Initialize Redis (Task Queue)
 // -------------------------------------------------
-export const redisClient = createClient({
-  url: process.env.REDIS_URL
+export const redisClient = createClient({ 
+  url: process.env.REDIS_URL,
+  pingInterval: 1000 * 60 * 2, // 🛡️ Ping every 2 minutes to keep Upstash awake
+  socket: {
+    reconnectStrategy: (retries) => {
+      console.log(`⚠️ Redis connection dropped. Reconnecting... (Attempt ${retries})`);
+      // Reconnect with a slight delay so we don't spam the server
+      return Math.min(retries * 100, 3000); 
+    }
+  }
 });
-redisClient.on('error', (err) => console.log('❌ Redis Client Error:', err));
-redisClient.on('connect', () => console.log('✅ API Gateway connected to Redis!'));
+
+redisClient.on('error', (err) => {
+  // Only log real errors, ignore the expected socket closed warnings
+  if (err.name === 'SocketClosedUnexpectedlyError') return;
+  console.error('❌ Redis Error:', err);
+});
 
 // -------------------------------------------------
 // 3. Initialize Minio (Object Storage)
