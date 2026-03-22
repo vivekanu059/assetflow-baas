@@ -5,38 +5,24 @@ import dotenv from 'dotenv';
 import mongoose from 'mongoose';
 import { createClient } from 'redis';
 import * as Minio from 'minio';
-import assetRoutes from './routes/assets.js';
 import pkg from '@prisma/client';
 const { PrismaClient } = pkg;
 import pg from 'pg';
 import { PrismaPg } from '@prisma/adapter-pg';
-import authRoutes from './routes/auth.js';
-import userRoutes from './routes/user.js';
 
+import authRoutes from './routes/auth.js';
+import assetRoutes from './routes/assets.js';
+import userRoutes from './routes/user.js';
 
 dotenv.config();
 
-const app = express();
-const PORT = process.env.PORT || 5000;
-
-// Middleware for security and JSON parsing
-app.use(helmet());
-app.use(cors());
-app.use(express.json());
-
-
-// API Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/assets', assetRoutes);
-app.use('/api/user', userRoutes);
 // -------------------------------------------------
-// 1. Initialize Prisma 7 (PostgreSQL with Adapter)
+// 1. Initialize Prisma (PostgreSQL with Adapter)
 // -------------------------------------------------
 const { Pool } = pg;
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const adapter = new PrismaPg(pool);
-
-export const prisma = new PrismaClient({ adapter }); // <-- This fixes the crash!
+export const prisma = new PrismaClient({ adapter });
 
 // -------------------------------------------------
 // 2. Initialize Redis (Task Queue)
@@ -44,7 +30,8 @@ export const prisma = new PrismaClient({ adapter }); // <-- This fixes the crash
 export const redisClient = createClient({
   url: process.env.REDIS_URL
 });
-redisClient.on('error', (err) => console.error('Redis Client Error', err));
+redisClient.on('error', (err) => console.log('❌ Redis Client Error:', err));
+redisClient.on('connect', () => console.log('✅ API Gateway connected to Redis!'));
 
 // -------------------------------------------------
 // 3. Initialize Minio (Object Storage)
@@ -58,41 +45,49 @@ export const minioClient = new Minio.Client({
 });
 
 // -------------------------------------------------
-// Boot Sequence: Connect to everything before listening
+// 4. Express App Setup & Routes
+// -------------------------------------------------
+const app = express();
+const PORT = process.env.PORT || 5000;
+
+app.use(helmet());
+app.use(cors());
+app.use(express.json());
+
+// API Routes
+app.use('/api/auth', authRoutes);
+app.use('/api/assets', assetRoutes);
+app.use('/api/user', userRoutes);
+
+// Basic Health Check Route
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'OK', message: 'AssetFlow API Gateway is running' });
+});
+
+// -------------------------------------------------
+// 5. Strict Boot Sequence (No Race Conditions)
 // -------------------------------------------------
 async function startServer() {
   try {
-    // Connect to MongoDB
-   // --- START THE DATABASES & SERVER ---
-  mongoose.connect(process.env.MONGO_URI)
-  .then(() => {
+    // 1. Connect to MongoDB
+    await mongoose.connect(process.env.MONGO_URI);
     console.log('✅ MongoDB securely connected for AI logs');
 
-    const PORT = process.env.PORT || 5000;
+    // 2. Connect to Redis
+    await redisClient.connect();
+    // (The success log is handled by the .on('connect') event above)
+
+    // 3. Connect to PostgreSQL
+    await prisma.$connect();
+    console.log('✅ PostgreSQL Connected (Users & Auth)');
+
+    // 4. ONLY start listening once ALL databases are secured
     app.listen(PORT, () => {
       console.log(`🚀 API Gateway running on port ${PORT}`);
     });
-  })
-  .catch((error) => {
-    console.error('❌ CRITICAL: Failed to connect to MongoDB', error);
-  });
-
-  
-    // Connect to Redis
-    await redisClient.connect();
-    console.log(' Redis Connected (Task Queue)');
-
-    // Test Postgres connection via Prisma
-    await prisma.$connect();
-    console.log(' PostgreSQL Connected (Users & Auth)');
-
-    // Basic Health Check Route
-    app.get('/health', (req, res) => {
-      res.status(200).json({ status: 'OK', message: 'AssetFlow API Gateway is running' });
-    });
 
   } catch (error) {
-    console.error(' Failed to start server:', error);
+    console.error('❌ CRITICAL: Failed to start server:', error);
     process.exit(1);
   }
 }
