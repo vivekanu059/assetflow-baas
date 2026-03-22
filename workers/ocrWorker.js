@@ -24,7 +24,7 @@ redisClient.on('error', (err) => console.error('Redis Error', err));
 const minioClient = new Minio.Client({
   endPoint: process.env.MINIO_ENDPOINT,
   port: parseInt(process.env.MINIO_PORT),
-  useSSL: false,
+  useSSL: process.env.MINIO_PORT === '443',
   accessKey: process.env.MINIO_ACCESS_KEY,
   secretKey: process.env.MINIO_SECRET_KEY,
 });
