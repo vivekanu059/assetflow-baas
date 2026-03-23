@@ -1,5 +1,4 @@
 import http from 'http';
-
 import { createClient } from 'redis';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
@@ -8,12 +7,9 @@ import mongoose from 'mongoose';
 dotenv.config();
 
 const TARGET_WEBHOOK_URL = process.env.TEST_WEBHOOK_URL || "https://webhook.site/your-unique-id";
-
-// for generating fake connection just to test the dead letter queue functionality. In production, this should be a real URL provided by the user.   use this target_webhook_url
-// const TARGET_WEBHOOK_URL = "https://httpstat.us/500"
-
 const WEBHOOK_SECRET = process.env.JWT_SECRET || "default_secret"; 
 
+// ONE Armored Redis Connection for both listening and pushing
 const redisClient = createClient({ 
   url: process.env.REDIS_URL,
   pingInterval: 1000 * 60 * 2, // Keep Upstash awake
@@ -25,12 +21,12 @@ const redisClient = createClient({
   }
 });
 
-// The aggressive log silencer
 redisClient.on('error', (err) => {
   const errorString = String(err);
   if (errorString.includes('Socket closed unexpectedly') || errorString.includes('SocketClosedUnexpectedlyError')) return;
   console.error('❌ Webhook Redis Error:', err);
 });
+
 // --- EXISTING SCHEMA ---
 const extractedDataSchema = new mongoose.Schema({
   assetId: String,
@@ -50,16 +46,8 @@ const dlqSchema = new mongoose.Schema({
 }, { collection: 'deadletterqueues' });
 const DLQ = mongoose.models.DLQ || mongoose.model('DLQ', dlqSchema);
 
-const redisPublisher = createClient({ url: process.env.REDIS_URL || 'redis://127.0.0.1:6379' });
-const redisListener = redisPublisher.duplicate(); // Clones the connection strictly for listening
-
-redisPublisher.on('error', (err) => console.error('Redis Publisher Error', err));
-redisListener.on('error', (err) => console.error('Redis Listener Error', err));
-
 async function startWebhookDispatcher() {
-  // Connect BOTH clients
-  await redisPublisher.connect();
-  await redisListener.connect();
+  await redisClient.connect();
   
   if (mongoose.connection.readyState === 0) {
     await mongoose.connect(process.env.MONGO_URI);
@@ -68,20 +56,20 @@ async function startWebhookDispatcher() {
   console.log('📡 Advanced Webhook Dispatcher (DLQ Enabled) online...');
 
   while (true) {
-    let response;
+    let jobString;
     try {
-      // 2. Use the LISTENER specifically for the blocking pop
-      response = await redisListener.brPop('webhook_queue', 0);
+      // 1. NON-BLOCKING POP: Polling instead of blocking
+      jobString = await redisClient.rPop('webhook_queue');
       
-      if (response) {
-        const job = JSON.parse(response.element);
+      if (jobString) {
+        const job = JSON.parse(jobString);
         console.log(`\n📤 Attempting webhook for Asset: ${job.assetId} (Attempt ${job.attempt})`);
 
         const documentData = await ExtractedData.findOne({ assetId: job.assetId });
         
         if (!documentData) {
             console.error(`❌ Data not found in Mongo. Skipping.`);
-            continue;
+            continue; // Move to the next job
         }
 
         const payload = {
@@ -115,12 +103,15 @@ async function startWebhookDispatcher() {
         } else {
           throw new Error(`Target rejected with status ${fetchResponse.status}`);
         }
+      } else {
+        // QUEUE IS EMPTY: Sleep for 2 seconds
+        await new Promise(resolve => setTimeout(resolve, 2000));
       }
     } catch (error) {
         console.error(`⚠️ Delivery failed: ${error.message}`);
         
-        if (response && response.element) {
-            const failedJob = JSON.parse(response.element);
+        if (jobString) {
+            const failedJob = JSON.parse(jobString);
             
             if (failedJob.attempt < 3) {
                 failedJob.attempt += 1;
@@ -128,8 +119,8 @@ async function startWebhookDispatcher() {
                 console.log(`⏳ Re-queuing job. Retrying in ${delayInSeconds}s...`);
                 
                 setTimeout(async () => {
-                    // 3. Use the PUBLISHER to push the message back in. No deadlocks!
-                    await redisPublisher.lPush('webhook_queue', JSON.stringify(failedJob));
+                    // Push right back into the queue using the exact same client
+                    await redisClient.lPush('webhook_queue', JSON.stringify(failedJob));
                 }, delayInSeconds * 1000);
                 
             } else {
@@ -159,7 +150,7 @@ startWebhookDispatcher();
 // -------------------------------------------------
 // Render Free Tier Hack
 // -------------------------------------------------
-const PORT = process.env.PORT || 10001; // Using 10001 to avoid local conflicts
+const PORT = process.env.PORT || 10001;
 http.createServer((req, res) => {
   res.writeHead(200);
   res.end('Webhook Worker is actively listening to Redis!');
