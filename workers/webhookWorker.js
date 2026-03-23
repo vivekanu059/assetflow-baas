@@ -1,3 +1,5 @@
+import http from 'http';
+
 import { createClient } from 'redis';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
@@ -12,9 +14,23 @@ const TARGET_WEBHOOK_URL = process.env.TEST_WEBHOOK_URL || "https://webhook.site
 
 const WEBHOOK_SECRET = process.env.JWT_SECRET || "default_secret"; 
 
-const redisClient = createClient({ url: process.env.REDIS_URL || 'redis://127.0.0.1:6379' });
-redisClient.on('error', (err) => console.error('Redis Error', err));
+const redisClient = createClient({ 
+  url: process.env.REDIS_URL,
+  pingInterval: 1000 * 60 * 2, // Keep Upstash awake
+  socket: {
+    reconnectStrategy: (retries) => {
+      console.log(`⚠️ Webhook Redis reconnecting... (Attempt ${retries})`);
+      return Math.min(retries * 100, 3000); 
+    }
+  }
+});
 
+// The aggressive log silencer
+redisClient.on('error', (err) => {
+  const errorString = String(err);
+  if (errorString.includes('Socket closed unexpectedly') || errorString.includes('SocketClosedUnexpectedlyError')) return;
+  console.error('❌ Webhook Redis Error:', err);
+});
 // --- EXISTING SCHEMA ---
 const extractedDataSchema = new mongoose.Schema({
   assetId: String,
@@ -139,3 +155,12 @@ async function startWebhookDispatcher() {
 }
 
 startWebhookDispatcher();
+
+// -------------------------------------------------
+// Render Free Tier Hack
+// -------------------------------------------------
+const PORT = process.env.PORT || 10001; // Using 10001 to avoid local conflicts
+http.createServer((req, res) => {
+  res.writeHead(200);
+  res.end('Webhook Worker is actively listening to Redis!');
+}).listen(PORT, () => console.log(`🛡️ Webhook Worker Free Tier Hack active on port ${PORT}`));
