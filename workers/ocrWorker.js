@@ -1,5 +1,4 @@
 import http from 'http';
-
 import Tesseract from 'tesseract.js';
 import { createClient } from 'redis';
 import * as Minio from 'minio';
@@ -8,7 +7,7 @@ import pg from 'pg';
 import pkg from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import mongoose from 'mongoose'; 
-import extractPdf from 'pdf-extraction'; // <-- THE MODERN, WORKING LIBRARY
+import extractPdf from 'pdf-extraction'; 
 
 dotenv.config();
 const { PrismaClient } = pkg;
@@ -24,21 +23,16 @@ const redisClient = createClient({
   socket: {
     reconnectStrategy: (retries) => {
       console.log(`⚠️ Redis connection dropped. Reconnecting... (Attempt ${retries})`);
-      // Reconnect with a slight delay so we don't spam the server
       return Math.min(retries * 100, 3000); 
     }
   }
 });
 
 redisClient.on('error', (err) => {
-  // Convert the whole error to a string to catch the phrase anywhere
   const errorString = String(err);
-  
-  // Aggressively filter out Upstash's serverless disconnect noise
   if (errorString.includes('Socket closed unexpectedly') || errorString.includes('SocketClosedUnexpectedlyError')) {
-    return; // Silently ignore it. The reconnectStrategy is already handling it!
+    return; 
   }
-  
   console.error('❌ Redis Error:', err);
 });
 
@@ -75,12 +69,13 @@ async function startWorker() {
   console.log('👷 Multi-Format Worker started. Listening for jobs on Redis...');
 
   while (true) {
-    let response;
+    let jobString;
     try {
-      response = await redisClient.brPop('ocr_processing_queue', 0);
+      // NON-BLOCKING POP: Safely pull from Upstash without freezing
+      jobString = await redisClient.rPop('ocr_processing_queue');
       
-      if (response) {
-        const job = JSON.parse(response.element);
+      if (jobString) {
+        const job = JSON.parse(jobString);
         console.log(`\n📦 Picked up job for Asset ID: ${job.assetId}`);
 
         console.log(`⬇️ Downloading ${job.originalName} from storage...`);
@@ -100,19 +95,11 @@ async function startWorker() {
 
         if (['png', 'jpg', 'jpeg'].includes(extension)) {
           console.log(`🖼️ Running Tesseract OCR engine on ${job.originalName}...`);
-          const { data: { text } } = await Tesseract.recognize(fileBuffer, 'eng', {
-            logger: m => {
-              if (m.status === 'recognizing text' && m.progress % 0.25 === 0) {
-                  console.log(`   Progress: ${Math.round(m.progress * 100)}%`);
-              }
-            }
-          });
+          const { data: { text } } = await Tesseract.recognize(fileBuffer, 'eng');
           extractedText = text;
 
         } else if (extension === 'pdf') {
           console.log(`📄 Parsing PDF Document: ${job.originalName}...`);
-          
-          // Modern, clean, and actually works in Node 22!
           const pdfData = await extractPdf(fileBuffer);
           extractedText = pdfData.text;
 
@@ -149,35 +136,34 @@ async function startWorker() {
           data: { status: 'COMPLETED' }
         });
         console.log(`📻 BROADCASTING TO REDIS: asset_updates for user ${job.userId}`);
-
-       
-        
         console.log(`------------------------------\n`);
+      } else {
+        // QUEUE IS EMPTY: Sleep for 2 seconds to let Upstash breathe
+        await new Promise(resolve => setTimeout(resolve, 2000));
       }
     } catch (error) {
       console.error('❌ Error processing job:', error);
-      if (response) {
+      if (jobString) {
         try {
-          const failedJob = JSON.parse(response.element);
+          const failedJob = JSON.parse(jobString);
           await prisma.asset.update({
             where: { id: failedJob.assetId },
             data: { status: 'FAILED' }
           });
-
         } catch (e) {
           console.error('Could not update database to FAILED state');
         }
       }
+      // Wait before retrying after an error
+      await new Promise(resolve => setTimeout(resolve, 3000));
     }
   }
 }
 
 startWorker();
 
-
 // -------------------------------------------------
-// Render Free Tier Hack: Bind to a port so Render 
-// thinks this is a website and doesn't kill it!
+// Render Free Tier Hack
 // -------------------------------------------------
 const PORT = process.env.PORT || 10000;
 http.createServer((req, res) => {
