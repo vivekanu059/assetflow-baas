@@ -10,12 +10,25 @@ const TARGET_WEBHOOK_URL = process.env.TEST_WEBHOOK_URL || "https://webhook.site
 const WEBHOOK_SECRET = process.env.JWT_SECRET || "default_secret"; 
 
 // ONE Armored Redis Connection for both listening and pushing
+// const redisClient = createClient({ 
+//   url: process.env.REDIS_URL,
+//   pingInterval: 1000 * 60 * 2, // Keep Upstash awake
+//   socket: {
+//     reconnectStrategy: (retries) => {
+//       console.log(`⚠️ Webhook Redis reconnecting... (Attempt ${retries})`);
+//       return Math.min(retries * 100, 3000); 
+//     }
+//   }
+// });
+
 const redisClient = createClient({ 
   url: process.env.REDIS_URL,
-  pingInterval: 1000 * 60 * 2, // Keep Upstash awake
+  pingInterval: 1000 * 60 * 2, 
+  disableOfflineQueue: true, // 🛡️ CRITICAL: Prevents silent freezing!
   socket: {
+    connectTimeout: 10000, // 🛡️ Drop dead connections after 10 seconds
     reconnectStrategy: (retries) => {
-      console.log(`⚠️ Webhook Redis reconnecting... (Attempt ${retries})`);
+      console.log(`⚠️ Redis reconnecting... (Attempt ${retries})`);
       return Math.min(retries * 100, 3000); 
     }
   }
@@ -150,8 +163,21 @@ startWebhookDispatcher();
 // -------------------------------------------------
 // Render Free Tier Hack
 // -------------------------------------------------
-const PORT = process.env.PORT || 10001;
+// const PORT = process.env.PORT || 10001;
+// http.createServer((req, res) => {
+//   res.writeHead(200);
+//   res.end('Webhook Worker is actively listening to Redis!');
+// }).listen(PORT, () => console.log(`🛡️ Webhook Worker Free Tier Hack active on port ${PORT}`));
+
+// -------------------------------------------------
+// Render Free Tier Hack (Cron-Job.org Safe)
+// -------------------------------------------------
+const PORT = process.env.PORT || 10001; // Note: Use 10001 for webhookWorker
 http.createServer((req, res) => {
-  res.writeHead(200);
-  res.end('Webhook Worker is actively listening to Redis!');
-}).listen(PORT, () => console.log(`🛡️ Webhook Worker Free Tier Hack active on port ${PORT}`));
+  // Send a perfectly formatted, tiny response so cron-job doesn't hang
+  res.writeHead(200, { 
+    'Content-Type': 'text/plain',
+    'Content-Length': '2'
+  });
+  res.end('OK');
+}).listen(PORT, '0.0.0.0', () => console.log(`🛡️ Worker awake on port ${PORT}`));
