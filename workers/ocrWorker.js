@@ -190,7 +190,7 @@ startWorker();
 // -------------------------------------------------
 // Render Free Tier Hack (Cron-Job.org Safe)
 // -------------------------------------------------
-const PORT = process.env.PORT || 10001; // 
+const PORT = process.env.PORT || 10000; // 
 http.createServer((req, res) => {
   // Send a perfectly formatted, tiny response so cron-job doesn't hang
   res.writeHead(200, { 
