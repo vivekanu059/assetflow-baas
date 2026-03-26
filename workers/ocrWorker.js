@@ -17,12 +17,28 @@ const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
+// OLDER ONE :
+// const redisClient = createClient({ 
+//   url: process.env.REDIS_URL,
+//   pingInterval: 1000 * 60 * 2, // 🛡️ Ping every 2 minutes to keep Upstash awake
+//   socket: {
+//     reconnectStrategy: (retries) => {
+//       console.log(`⚠️ Redis connection dropped. Reconnecting... (Attempt ${retries})`);
+//       return Math.min(retries * 100, 3000); 
+//     }
+//   }
+// });
+
+
+//NEW ONE 
 const redisClient = createClient({ 
   url: process.env.REDIS_URL,
-  pingInterval: 1000 * 60 * 2, // 🛡️ Ping every 2 minutes to keep Upstash awake
+  pingInterval: 1000 * 60 * 2, 
+  disableOfflineQueue: true, // 🛡️ CRITICAL: Prevents silent freezing!
   socket: {
+    connectTimeout: 10000, // 🛡️ Drop dead connections after 10 seconds
     reconnectStrategy: (retries) => {
-      console.log(`⚠️ Redis connection dropped. Reconnecting... (Attempt ${retries})`);
+      console.log(`⚠️ Redis reconnecting... (Attempt ${retries})`);
       return Math.min(retries * 100, 3000); 
     }
   }
@@ -165,8 +181,21 @@ startWorker();
 // -------------------------------------------------
 // Render Free Tier Hack
 // -------------------------------------------------
-const PORT = process.env.PORT || 10000;
+// const PORT = process.env.PORT || 10000;
+// http.createServer((req, res) => {
+//   res.writeHead(200);
+//   res.end('OCR Worker is actively listening to Redis!');
+// }).listen(PORT, () => console.log(`🛡️ Render Free Tier Hack active on port ${PORT}`));
+
+// -------------------------------------------------
+// Render Free Tier Hack (Cron-Job.org Safe)
+// -------------------------------------------------
+const PORT = process.env.PORT || 10001; // 
 http.createServer((req, res) => {
-  res.writeHead(200);
-  res.end('OCR Worker is actively listening to Redis!');
-}).listen(PORT, () => console.log(`🛡️ Render Free Tier Hack active on port ${PORT}`));
+  // Send a perfectly formatted, tiny response so cron-job doesn't hang
+  res.writeHead(200, { 
+    'Content-Type': 'text/plain',
+    'Content-Length': '2'
+  });
+  res.end('OK');
+}).listen(PORT, '0.0.0.0', () => console.log(`🛡️ Worker awake on port ${PORT}`));
