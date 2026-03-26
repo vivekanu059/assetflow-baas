@@ -27,13 +27,14 @@ export const prisma = new PrismaClient({ adapter });
 // -------------------------------------------------
 // 2. Initialize Redis (Task Queue)
 // -------------------------------------------------
-export const redisClient = createClient({ 
+const redisClient = createClient({ 
   url: process.env.REDIS_URL,
-  pingInterval: 1000 * 60 * 2, // 🛡️ Ping every 2 minutes to keep Upstash awake
+  pingInterval: 1000 * 60 * 2, 
+  disableOfflineQueue: true, // 🛡️ CRITICAL: Prevents silent freezing!
   socket: {
+    connectTimeout: 10000, // 🛡️ Drop dead connections after 10 seconds
     reconnectStrategy: (retries) => {
-      console.log(`⚠️ Redis connection dropped. Reconnecting... (Attempt ${retries})`);
-      // Reconnect with a slight delay so we don't spam the server
+      console.log(`⚠️ Redis reconnecting... (Attempt ${retries})`);
       return Math.min(retries * 100, 3000); 
     }
   }
