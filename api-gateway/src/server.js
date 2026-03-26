@@ -27,7 +27,7 @@ export const prisma = new PrismaClient({ adapter });
 // -------------------------------------------------
 // 2. Initialize Redis (Task Queue)
 // -------------------------------------------------
-const redisClient = createClient({ 
+export const redisClient = createClient({ 
   url: process.env.REDIS_URL,
   pingInterval: 1000 * 60 * 2, 
   disableOfflineQueue: true, // 🛡️ CRITICAL: Prevents silent freezing!
