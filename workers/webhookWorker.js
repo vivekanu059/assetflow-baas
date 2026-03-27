@@ -3,8 +3,18 @@ import { createClient } from 'redis';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
-
+import { PrismaPg } from '@prisma/adapter-pg';
+import pg from 'pg';
+import pkg from '@prisma/client';
 dotenv.config();
+
+
+
+
+const { PrismaClient } = pkg;
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+const adapter = new PrismaPg(pool);
+const prisma = new PrismaClient({ adapter });
 
 const TARGET_WEBHOOK_URL = process.env.TEST_WEBHOOK_URL || "https://webhook.site/your-unique-id";
 const WEBHOOK_SECRET = process.env.JWT_SECRET || "default_secret"; 
@@ -86,8 +96,28 @@ async function startWebhookDispatcher() {
         
         if (!documentData) {
             console.error(`❌ Data not found in Mongo. Skipping.`);
-            continue; // Move to the next job
+            continue; 
         }
+
+        // 🌟 NEW: Fetch the specific user's Webhook settings from PostgreSQL
+        const user = await prisma.user.findUnique({ where: { id: documentData.userId }});
+        
+        if (!user || !user.webhookUrl || !user.webhookSecret) {
+             console.log(`⚠️ User ${documentData.userId} does not have a webhook configured. Skipping.`);
+             continue; // They don't have a webhook set up, so just drop the job and move on!
+        }
+
+        const TARGET_WEBHOOK_URL = user.webhookUrl;
+        const WEBHOOK_SECRET = user.webhookSecret;
+
+        // ... The rest of your payload and fetch logic stays exactly the same!
+        payload = { /* ... */ };
+        payloadString = JSON.stringify(payload);
+        
+        // It will now sign it with THEIR personal secret
+         signature = crypto.createHmac('sha256', WEBHOOK_SECRET).update(payloadString).digest('hex');
+
+
 
         const payload = {
           event: 'asset.processed',
