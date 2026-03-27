@@ -123,10 +123,6 @@ async function startWebhookDispatcher() {
       } else {
         // QUEUE IS EMPTY: Sleep for 2 seconds
         await new Promise(resolve => setTimeout(resolve, 2000));
-        
-        if (Math.random() < 0.2) { 
-           console.log(`💓 Webhook Worker listening... [Idle]`);
-        }
       }
     } catch (error) {
         console.error(`⚠️ Delivery failed: ${error.message}`);
