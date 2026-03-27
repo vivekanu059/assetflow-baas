@@ -80,9 +80,17 @@ const ExtractedData = mongoose.models.ExtractedData || mongoose.model('Extracted
 async function startWorker() {
   await redisClient.connect();
   
-  await mongoose.connect(process.env.MONGO_URI);
-  console.log('✅ MongoDB Connected for data storage');
-  console.log('👷 Multi-Format Worker started. Listening for jobs on Redis...');
+  // await mongoose.connect(process.env.MONGO_URI);
+  // console.log('✅ MongoDB Connected for data storage');
+  // console.log('👷 Multi-Format Worker started. Listening for jobs on Redis...');
+
+  if (mongoose.connection.readyState === 0) {
+    await mongoose.connect(process.env.MONGO_URI, {
+      serverSelectionTimeoutMS: 5000, // 🛡️ CRITICAL: Fail after 5 seconds instead of freezing forever!
+      socketTimeoutMS: 45000,
+    });
+    console.log('✅ MongoDB Connected with Anti-Freeze enabled');
+  }
 
   while (true) {
     let jobString;
@@ -153,9 +161,14 @@ async function startWorker() {
         });
         console.log(`📻 BROADCASTING TO REDIS: asset_updates for user ${job.userId}`);
         console.log(`------------------------------\n`);
-      } else {
-        // QUEUE IS EMPTY: Sleep for 2 seconds to let Upstash breathe
+     } else {
+        // QUEUE IS EMPTY: Sleep for 2 seconds
         await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        // 💓 The Heartbeat: Print every ~10 seconds so we know it isn't frozen
+        if (Math.random() < 0.2) { 
+           console.log(`💓 OCR Worker listening... [Idle]`);
+        }
       }
     } catch (error) {
       console.error('❌ Error processing job:', error);
@@ -190,7 +203,7 @@ startWorker();
 // -------------------------------------------------
 // Render Free Tier Hack (Cron-Job.org Safe)
 // -------------------------------------------------
-const PORT = process.env.PORT || 10000; // 
+const PORT = process.env.PORT || 10001; // Note: Use 10001 for webhookWorker
 http.createServer((req, res) => {
   // Send a perfectly formatted, tiny response so cron-job doesn't hang
   res.writeHead(200, { 
