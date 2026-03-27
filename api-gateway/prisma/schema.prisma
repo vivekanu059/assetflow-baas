@@ -25,6 +25,8 @@ model User {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  webhookUrl    String?  // Optional, because new users won't have one yet
+  webhookSecret String?  // Optional, auto-generated when they save a URL
 }
 
 enum Tier {
