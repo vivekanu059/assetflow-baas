@@ -177,6 +177,47 @@ router.post('/api-key/roll', requireAuth, async (req, res) => {
   }
 });
 
+// Route to update webhook settings (Requires the user to be logged in)
+router.put('/webhook', requireAuth, async (req, res) => {
+  try {
+    // 3. Your middleware securely attached the user data here!
+    // Note: Use req.user.userId if that is how you named it when signing the JWT
+    const userId = req.user.id || req.user.userId; 
+    const { webhookUrl } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID missing from token payload' });
+    }
+
+    // Find the user in PostgreSQL
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    // Generate a Secret Key ONLY if they don't have one yet
+    const newSecret = user.webhookSecret || crypto.randomBytes(32).toString('hex');
+
+    // Save to database
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: { 
+        webhookUrl: webhookUrl,
+        webhookSecret: newSecret
+      }
+    });
+
+    res.status(200).json({ 
+      message: 'Webhook settings saved!',
+      webhookUrl: updatedUser.webhookUrl,
+      webhookSecret: updatedUser.webhookSecret
+    });
+
+  } catch (error) {
+    console.error('❌ Error saving webhook:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+
 
 
 
