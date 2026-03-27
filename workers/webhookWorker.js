@@ -63,7 +63,11 @@ async function startWebhookDispatcher() {
   await redisClient.connect();
   
   if (mongoose.connection.readyState === 0) {
-    await mongoose.connect(process.env.MONGO_URI);
+    await mongoose.connect(process.env.MONGO_URI, {
+      serverSelectionTimeoutMS: 5000, // 🛡️ CRITICAL: Fail after 5 seconds instead of freezing forever!
+      socketTimeoutMS: 45000,
+    });
+    console.log('✅ MongoDB Connected with Anti-Freeze enabled');
   }
   
   console.log('📡 Advanced Webhook Dispatcher (DLQ Enabled) online...');
@@ -119,6 +123,10 @@ async function startWebhookDispatcher() {
       } else {
         // QUEUE IS EMPTY: Sleep for 2 seconds
         await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        if (Math.random() < 0.2) { 
+           console.log(`💓 Webhook Worker listening... [Idle]`);
+        }
       }
     } catch (error) {
         console.error(`⚠️ Delivery failed: ${error.message}`);
@@ -131,10 +139,15 @@ async function startWebhookDispatcher() {
                 const delayInSeconds = Math.pow(3, failedJob.attempt - 1) * 5; 
                 console.log(`⏳ Re-queuing job. Retrying in ${delayInSeconds}s...`);
                 
-                setTimeout(async () => {
-                    // Push right back into the queue using the exact same client
-                    await redisClient.lPush('webhook_queue', JSON.stringify(failedJob));
-                }, delayInSeconds * 1000);
+               setTimeout(async () => {
+    try {
+        // Safely push back into the queue
+        await redisClient.lPush('webhook_queue', JSON.stringify(failedJob));
+        console.log(`♻️ Job re-queued successfully.`);
+    } catch (e) {
+        console.error(`❌ CRITICAL: Failed to re-queue job!`, e.message);
+    }
+}, delayInSeconds * 1000);
                 
             } else {
                 console.log(`💀 Webhook permanently failed. Moving to Dead Letter Queue.`);
@@ -172,7 +185,7 @@ startWebhookDispatcher();
 // -------------------------------------------------
 // Render Free Tier Hack (Cron-Job.org Safe)
 // -------------------------------------------------
-const PORT = process.env.PORT || 10001; // Note: Use 10001 for webhookWorker
+const PORT = process.env.PORT || 10000; // Note: Use 10001 for webhookWorker
 http.createServer((req, res) => {
   // Send a perfectly formatted, tiny response so cron-job doesn't hang
   res.writeHead(200, { 
