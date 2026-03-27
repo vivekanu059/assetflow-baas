@@ -162,14 +162,10 @@ async function startWorker() {
         console.log(`📻 BROADCASTING TO REDIS: asset_updates for user ${job.userId}`);
         console.log(`------------------------------\n`);
      } else {
-        // QUEUE IS EMPTY: Sleep for 2 seconds
+        // QUEUE IS EMPTY: Sleep for 2 seconds to let Upstash breathe
         await new Promise(resolve => setTimeout(resolve, 2000));
-        
-        // 💓 The Heartbeat: Print every ~10 seconds so we know it isn't frozen
-        if (Math.random() < 0.2) { 
-           console.log(`💓 OCR Worker listening... [Idle]`);
-        }
       }
+      
     } catch (error) {
       console.error('❌ Error processing job:', error);
       if (jobString) {
