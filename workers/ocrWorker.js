@@ -44,12 +44,17 @@ const redisClient = createClient({
   }
 });
 
+// When Upstash drops the connection, DO NOT ignore it. 
+// Kill the process so Render can instantly restart it with a fresh connection.
 redisClient.on('error', (err) => {
-  const errorString = String(err);
-  if (errorString.includes('Socket closed unexpectedly') || errorString.includes('SocketClosedUnexpectedlyError')) {
-    return; 
-  }
-  console.error('❌ Redis Error:', err);
+  console.error('❌ Redis Connection Severed:', err.message);
+  console.log('🔄 Forcing container restart to recover TCP socket...');
+  process.exit(1); 
+});
+
+redisClient.on('end', () => {
+  console.error('❌ Redis Socket Closed.');
+  process.exit(1);
 });
 
 // 1. Bulletproof the endpoint by automatically stripping https:// or http://
