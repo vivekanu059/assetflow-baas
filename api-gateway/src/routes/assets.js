@@ -12,7 +12,8 @@ const router = express.Router();
 router.post('/upload-url', requireAuth, rateLimiter, async (req, res) => {
   try {
     const { fileName, fileSize, contentType } = req.body;
-    const userId = req.user.userId;
+    // Note: Assuming your JWT middleware attaches the ID to req.user.userId
+    const userId = req.user.userId || req.user.id; 
 
     if (!fileName || !fileSize) {
       return res.status(400).json({ error: 'fileName and fileSize are required' });
@@ -73,7 +74,7 @@ router.post('/upload-url', requireAuth, rateLimiter, async (req, res) => {
 router.post('/finalize', requireAuth, rateLimiter, async (req, res) => {
   try {
     const { assetId } = req.body;
-    const userId = req.user.userId;
+    const userId = req.user.userId || req.user.id;
 
     if (!assetId) {
       return res.status(400).json({ error: 'assetId is required' });
@@ -111,6 +112,15 @@ router.post('/finalize', requireAuth, rateLimiter, async (req, res) => {
     };
 
     console.log("📦 Attempting to push job to Redis:", jobPayload);
+
+    // ---------------------------------------------------------
+    // ⏰ THE PRE-FLIGHT WAKEUP CALL (Fire and Forget)
+    // This forces Render to instantly boot the workers in the background!
+    // Notice there is NO 'await' here. We don't want to slow down the user.
+    // ---------------------------------------------------------
+    console.log("⚡ Firing wake-up signals to headless workers...");
+    fetch('https://assetflow-ocr-worker.onrender.com').catch((e) => console.log('OCR Worker ping skipped (local or sleeping)'));
+    fetch('https://assetflow-webhook-worker.onrender.com').catch((e) => console.log('Webhook Worker ping skipped (local or sleeping)'));
 
     // 5. Push the job to the Redis Queue
     await redisClient.lPush('ocr_processing_queue', JSON.stringify(jobPayload));
