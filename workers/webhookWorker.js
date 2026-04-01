@@ -105,7 +105,7 @@ async function startWebhookDispatcher() {
             console.error(`❌ Data not found in Mongo. Skipping.`);
             continue; 
         }
-
+console.log(`🔍 DEBUG: Looking up Webhook for User ID: "${documentData.userId}"`);
         // 🌟 NEW: Fetch the specific user's Webhook settings from PostgreSQL
         const user = await prisma.user.findUnique({ where: { id: documentData.userId }});
         
