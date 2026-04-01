@@ -9,16 +9,11 @@ const router = express.Router();
 // -------------------------------------------------
 // GENERATE PRESIGNED UPLOAD URL
 // -------------------------------------------------
-
-// ⏰ Wake up the background workers instantly from the browser!
-// We use mode: 'no-cors' so the browser doesn't block the ping.
-fetch('https://assetflow-ocr-worker.onrender.com', { mode: 'no-cors' }).catch(() => {});
-fetch('https://assetflow-webhook-worker.onrender.com', { mode: 'no-cors' }).catch(() => {});
-
 router.post('/upload-url', requireAuth, rateLimiter, async (req, res) => {
   try {
     const { fileName, fileSize, contentType } = req.body;
-    const userId = req.user.userId; // 🔙 Reverted back to your original working code
+    // Note: Assuming your JWT middleware attaches the ID to req.user.userId
+    const userId = req.user.userId || req.user.id; 
 
     if (!fileName || !fileSize) {
       return res.status(400).json({ error: 'fileName and fileSize are required' });
@@ -28,17 +23,22 @@ router.post('/upload-url', requireAuth, rateLimiter, async (req, res) => {
     const uniqueStorageKey = `${userId}/${uuidv4()}.${fileExtension}`;
     const expiryInSeconds = 15 * 60;
 
+    // --- THE ENTERPRISE FIX: Internal vs External Client ---
+    // If we are in local Docker ('minio'), build the URL for 'localhost'. 
+    // If we are in production (e.g., 'storage.assetflow.com'), use that!
     const externalEndpoint = process.env.MINIO_ENDPOINT === 'minio' ? 'localhost' : process.env.MINIO_ENDPOINT;
 
+    // We instantiate a lightweight client just for generating the URL
     const frontendMinioClient = new Minio.Client({
       endPoint: externalEndpoint,
       port: parseInt(process.env.MINIO_PORT),
       useSSL: process.env.MINIO_PORT === '443',
       accessKey: process.env.MINIO_ACCESS_KEY,
       secretKey: process.env.MINIO_SECRET_KEY,
-      region: 'us-east-1' 
+      region: 'us-east-1' // CRITICAL: This forces the SDK to do the cryptography 100% offline without network pings!
     });
 
+    // Generate the URL using the external client
     const presignedUrl = await frontendMinioClient.presignedPutObject(
       'raw-assets',        
       uniqueStorageKey,    
@@ -74,12 +74,13 @@ router.post('/upload-url', requireAuth, rateLimiter, async (req, res) => {
 router.post('/finalize', requireAuth, rateLimiter, async (req, res) => {
   try {
     const { assetId } = req.body;
-    const userId = req.user.userId; // 🔙 Reverted back to your original working code
+    const userId = req.user.userId || req.user.id;
 
     if (!assetId) {
       return res.status(400).json({ error: 'assetId is required' });
     }
 
+    // 1. Verify the asset belongs to this user and is PENDING
     const asset = await prisma.asset.findFirst({
       where: { id: assetId, userId: userId, status: 'PENDING' }
     });
@@ -88,17 +89,20 @@ router.post('/finalize', requireAuth, rateLimiter, async (req, res) => {
       return res.status(404).json({ error: 'Asset not found or already processed' });
     }
 
+    // 2. Verify the file actually exists in Minio (Security Check)
     try {
       await minioClient.statObject('raw-assets', asset.minioUrl);
     } catch (err) {
       return res.status(400).json({ error: 'File not found in storage. Did you upload it?' });
     }
 
+    // 3. Update the database status to PROCESSING
     const updatedAsset = await prisma.asset.update({
       where: { id: assetId },
       data: { status: 'PROCESSING' }
     });
 
+    // 4. Create the Job Payload
     const jobPayload = {
       assetId: updatedAsset.id,
       minioUrl: updatedAsset.minioUrl,
@@ -109,8 +113,16 @@ router.post('/finalize', requireAuth, rateLimiter, async (req, res) => {
 
     console.log("📦 Attempting to push job to Redis:", jobPayload);
 
-    // 🔙 Backend fetch crash completely removed
+    // ---------------------------------------------------------
+    // ⏰ THE PRE-FLIGHT WAKEUP CALL (Fire and Forget)
+    // This forces Render to instantly boot the workers in the background!
+    // Notice there is NO 'await' here. We don't want to slow down the user.
+    // ---------------------------------------------------------
+    console.log("⚡ Firing wake-up signals to headless workers...");
+    fetch('https://assetflow-ocr-worker.onrender.com').catch((e) => console.log('OCR Worker ping skipped (local or sleeping)'));
+    fetch('https://assetflow-webhook-worker.onrender.com').catch((e) => console.log('Webhook Worker ping skipped (local or sleeping)'));
 
+    // 5. Push the job to the Redis Queue
     await redisClient.lPush('ocr_processing_queue', JSON.stringify(jobPayload));
 
     console.log("✅ Successfully pushed to Redis!");
