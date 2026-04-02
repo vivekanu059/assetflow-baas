@@ -74,7 +74,7 @@ app.use(helmet());
 app.use(cors({
   origin: [
     'http://localhost:3000', // Keep local for your own testing
-    'https://assetflow-dashboard.vercel.app' // Add your exact Vercel URL here!
+    'https://assetflow-baas.vercel.app' // Add your exact Vercel URL here!
   ],
   credentials: true
 }));
