@@ -108,6 +108,7 @@ async function startWebhookDispatcher() {
 console.log(`🔍 DEBUG: Looking up Webhook for User ID: "${documentData.userId}"`);
         // 🌟 NEW: Fetch the specific user's Webhook settings from PostgreSQL
         const user = await prisma.user.findUnique({ where: { id: documentData.userId }});
+        console.log(`🔍 DEBUG: Full User Object from DB:`, user);
         
         if (!user || !user.webhookUrl || !user.webhookSecret) {
              console.log(`⚠️ User ${documentData.userId} does not have a webhook configured. Skipping.`);
