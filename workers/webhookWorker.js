@@ -8,35 +8,17 @@ import pg from 'pg';
 import pkg from '@prisma/client';
 dotenv.config();
 
-
-
-
 const { PrismaClient } = pkg;
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
-const TARGET_WEBHOOK_URL = process.env.TEST_WEBHOOK_URL || "https://webhook.site/your-unique-id";
-const WEBHOOK_SECRET = process.env.JWT_SECRET || "default_secret"; 
-
-// ONE Armored Redis Connection for both listening and pushing
-// const redisClient = createClient({ 
-//   url: process.env.REDIS_URL,
-//   pingInterval: 1000 * 60 * 2, // Keep Upstash awake
-//   socket: {
-//     reconnectStrategy: (retries) => {
-//       console.log(`⚠️ Webhook Redis reconnecting... (Attempt ${retries})`);
-//       return Math.min(retries * 100, 3000); 
-//     }
-//   }
-// });
-
 const redisClient = createClient({ 
   url: process.env.REDIS_URL,
   pingInterval: 1000 * 60 * 2, 
-  disableOfflineQueue: true, // 🛡️ CRITICAL: Prevents silent freezing!
+  disableOfflineQueue: true, 
   socket: {
-    connectTimeout: 10000, // 🛡️ Drop dead connections after 10 seconds
+    connectTimeout: 10000, 
     reconnectStrategy: (retries) => {
       console.log(`⚠️ Redis reconnecting... (Attempt ${retries})`);
       return Math.min(retries * 100, 3000); 
@@ -45,7 +27,6 @@ const redisClient = createClient({
 });
 
 // When Upstash drops the connection, DO NOT ignore it. 
-// Kill the process so Render can instantly restart it with a fresh connection.
 redisClient.on('error', (err) => {
   console.error('❌ Redis Connection Severed:', err.message);
   console.log('🔄 Forcing container restart to recover TCP socket...');
@@ -57,7 +38,7 @@ redisClient.on('end', () => {
   process.exit(1);
 });
 
-// --- EXISTING SCHEMA ---
+// --- SCHEMA ---
 const extractedDataSchema = new mongoose.Schema({
   assetId: String,
   userId: String,
@@ -66,7 +47,7 @@ const extractedDataSchema = new mongoose.Schema({
 }, { collection: 'extracteddatas' }); 
 const ExtractedData = mongoose.models.ExtractedDataWebhook || mongoose.model('ExtractedDataWebhook', extractedDataSchema);
 
-// --- NEW: DEAD LETTER QUEUE (DLQ) SCHEMA ---
+// --- DEAD LETTER QUEUE (DLQ) SCHEMA ---
 const dlqSchema = new mongoose.Schema({
   assetId: { type: String, required: true },
   userId: { type: String, required: true },
@@ -81,7 +62,7 @@ async function startWebhookDispatcher() {
   
   if (mongoose.connection.readyState === 0) {
     await mongoose.connect(process.env.MONGO_URI, {
-      serverSelectionTimeoutMS: 5000, // 🛡️ CRITICAL: Fail after 5 seconds instead of freezing forever!
+      serverSelectionTimeoutMS: 5000, 
       socketTimeoutMS: 45000,
     });
     console.log('✅ MongoDB Connected with Anti-Freeze enabled');
@@ -92,7 +73,6 @@ async function startWebhookDispatcher() {
   while (true) {
     let jobString;
     try {
-      // 1. NON-BLOCKING POP: Polling instead of blocking
       jobString = await redisClient.rPop('webhook_queue');
       
       if (jobString) {
@@ -105,28 +85,16 @@ async function startWebhookDispatcher() {
             console.error(`❌ Data not found in Mongo. Skipping.`);
             continue; 
         }
-console.log(`🔍 DEBUG: Looking up Webhook for User ID: "${documentData.userId}"`);
-        // 🌟 NEW: Fetch the specific user's Webhook settings from PostgreSQL
+
+        console.log(`🔍 DEBUG: Looking up Webhook for User ID: "${documentData.userId}"`);
         const user = await prisma.user.findUnique({ where: { id: documentData.userId }});
-        console.log(`🔍 DEBUG: Full User Object from DB:`, user);
         
         if (!user || !user.webhookUrl || !user.webhookSecret) {
              console.log(`⚠️ User ${documentData.userId} does not have a webhook configured. Skipping.`);
-             continue; // They don't have a webhook set up, so just drop the job and move on!
+             continue; 
         }
 
-        const TARGET_WEBHOOK_URL = user.webhookUrl;
-        const WEBHOOK_SECRET = user.webhookSecret;
-
-        // ... The rest of your payload and fetch logic stays exactly the same!
-        payload = { /* ... */ };
-        payloadString = JSON.stringify(payload);
-        
-        // It will now sign it with THEIR personal secret
-         signature = crypto.createHmac('sha256', WEBHOOK_SECRET).update(payloadString).digest('hex');
-
-
-
+        // 1. CREATE THE PAYLOAD
         const payload = {
           event: 'asset.processed',
           assetId: job.assetId,
@@ -138,11 +106,15 @@ console.log(`🔍 DEBUG: Looking up Webhook for User ID: "${documentData.userId}
           timestamp: new Date().toISOString()
         };
 
+        // 2. STRINGIFY IT
         const payloadString = JSON.stringify(payload);
-        const signature = crypto.createHmac('sha256', WEBHOOK_SECRET).update(payloadString).digest('hex');
+        
+        // 3. SIGN IT WITH THE USER'S SECRET
+        const signature = crypto.createHmac('sha256', user.webhookSecret).update(payloadString).digest('hex');
         const idempotencyKey = `evt_${job.assetId}_completed`;
 
-        const fetchResponse = await fetch(TARGET_WEBHOOK_URL, {
+        // 4. SEND IT TO THE USER'S URL
+        const fetchResponse = await fetch(user.webhookUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -173,15 +145,14 @@ console.log(`🔍 DEBUG: Looking up Webhook for User ID: "${documentData.userId}
                 const delayInSeconds = Math.pow(3, failedJob.attempt - 1) * 5; 
                 console.log(`⏳ Re-queuing job. Retrying in ${delayInSeconds}s...`);
                 
-               setTimeout(async () => {
-    try {
-        // Safely push back into the queue
-        await redisClient.lPush('webhook_queue', JSON.stringify(failedJob));
-        console.log(`♻️ Job re-queued successfully.`);
-    } catch (e) {
-        console.error(`❌ CRITICAL: Failed to re-queue job!`, e.message);
-    }
-}, delayInSeconds * 1000);
+                setTimeout(async () => {
+                    try {
+                        await redisClient.lPush('webhook_queue', JSON.stringify(failedJob));
+                        console.log(`♻️ Job re-queued successfully.`);
+                    } catch (e) {
+                        console.error(`❌ CRITICAL: Failed to re-queue job!`, e.message);
+                    }
+                }, delayInSeconds * 1000);
                 
             } else {
                 console.log(`💀 Webhook permanently failed. Moving to Dead Letter Queue.`);
@@ -210,21 +181,11 @@ startWebhookDispatcher();
 // -------------------------------------------------
 // Render Free Tier Hack
 // -------------------------------------------------
-// const PORT = process.env.PORT || 10001;
-// http.createServer((req, res) => {
-//   res.writeHead(200);
-//   res.end('Webhook Worker is actively listening to Redis!');
-// }).listen(PORT, () => console.log(`🛡️ Webhook Worker Free Tier Hack active on port ${PORT}`));
-
-// -------------------------------------------------
-// Render Free Tier Hack (Cron-Job.org Safe)
-// -------------------------------------------------
-const PORT = process.env.PORT || 10000; // Note: Use 10001 for webhookWorker
+const PORT = process.env.PORT || 10000; 
 http.createServer((req, res) => {
-  // Send a perfectly formatted, tiny response so cron-job doesn't hang
   res.writeHead(200, { 
     'Content-Type': 'text/plain',
     'Content-Length': '2'
   });
   res.end('OK');
-}).listen(PORT, '0.0.0.0', () => console.log(`🛡️ Worker awake on port ${PORT}`));
+}).listen(PORT, '0.0.0.0', () => console.log(`🛡️ Webhook Worker awake on port ${PORT}`));
