@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 // 1. Point to the cloud URL if it exists, otherwise fall back to localhost
-const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api';
+const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
 
 // 2. Create a central Axios instance pointing to your API Gateway
 const api = axios.create({
