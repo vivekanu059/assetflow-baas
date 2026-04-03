@@ -31,7 +31,7 @@ export default function HomePage() {
             </div>
             
             <div className="flex items-center gap-6">
-              <a href="https://github.com" className="text-xs font-medium text-neutral-400 hover:text-white transition-colors">Documentation</a>
+              <Link href="/docs" className="text-xs font-medium text-neutral-400 hover:text-white transition-colors">Documentation</Link>
               {isLoggedIn ? (
                 <Link href="/dashboard" className="text-xs font-semibold px-4 py-1.5 bg-white text-black hover:bg-neutral-200 transition-colors">
                   Go to Console
