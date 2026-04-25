@@ -1,5 +1,4 @@
 import http from 'http';
-import Tesseract from 'tesseract.js';
 import { createClient } from 'redis';
 import * as Minio from 'minio';
 import dotenv from 'dotenv';
@@ -7,7 +6,7 @@ import pg from 'pg';
 import pkg from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import mongoose from 'mongoose'; 
-import extractPdf from 'pdf-extraction'; 
+import { GoogleGenerativeAI } from '@google/generative-ai'; // 🆕 The new AI Engine
 
 dotenv.config();
 const { PrismaClient } = pkg;
@@ -17,20 +16,13 @@ const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
-// OLDER ONE :
-// const redisClient = createClient({ 
-//   url: process.env.REDIS_URL,
-//   pingInterval: 1000 * 60 * 2, // 🛡️ Ping every 2 minutes to keep Upstash awake
-//   socket: {
-//     reconnectStrategy: (retries) => {
-//       console.log(`⚠️ Redis connection dropped. Reconnecting... (Attempt ${retries})`);
-//       return Math.min(retries * 100, 3000); 
-//     }
-//   }
-// });
+// Initialize Google AI Studio Client
+if (!process.env.GEMINI_API_KEY) {
+  console.error("❌ FATAL: GEMINI_API_KEY is missing from environment variables.");
+  process.exit(1);
+}
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-
-//NEW ONE 
 const redisClient = createClient({ 
   url: process.env.REDIS_URL,
   pingInterval: 1000 * 60 * 2, 
@@ -45,7 +37,6 @@ const redisClient = createClient({
 });
 
 // When Upstash drops the connection, DO NOT ignore it. 
-// Kill the process so Render can instantly restart it with a fresh connection.
 redisClient.on('error', (err) => {
   console.error('❌ Redis Connection Severed:', err.message);
   console.log('🔄 Forcing container restart to recover TCP socket...');
@@ -57,12 +48,12 @@ redisClient.on('end', () => {
   process.exit(1);
 });
 
-// 1. Bulletproof the endpoint by automatically stripping https:// or http://
+// Bulletproof the endpoint
 const cleanEndpoint = process.env.MINIO_ENDPOINT 
   ? process.env.MINIO_ENDPOINT.replace(/^https?:\/\//, '') 
   : '127.0.0.1';
 
-// 2. Initialize MinIO
+// Initialize MinIO
 const minioClient = new Minio.Client({
   endPoint: cleanEndpoint,
   port: parseInt(process.env.MINIO_PORT || '9000'),
@@ -84,14 +75,10 @@ const ExtractedData = mongoose.models.ExtractedData || mongoose.model('Extracted
 // 2. The Main Worker Loop
 async function startWorker() {
   await redisClient.connect();
-  
-  // await mongoose.connect(process.env.MONGO_URI);
-  // console.log('✅ MongoDB Connected for data storage');
-  // console.log('👷 Multi-Format Worker started. Listening for jobs on Redis...');
 
   if (mongoose.connection.readyState === 0) {
     await mongoose.connect(process.env.MONGO_URI, {
-      serverSelectionTimeoutMS: 5000, // 🛡️ CRITICAL: Fail after 5 seconds instead of freezing forever!
+      serverSelectionTimeoutMS: 5000, 
       socketTimeoutMS: 45000,
     });
     console.log('✅ MongoDB Connected with Anti-Freeze enabled');
@@ -100,7 +87,7 @@ async function startWorker() {
   while (true) {
     let jobString;
     try {
-      // NON-BLOCKING POP: Safely pull from Upstash without freezing
+      // NON-BLOCKING POP
       jobString = await redisClient.rPop('ocr_processing_queue');
       
       if (jobString) {
@@ -116,31 +103,43 @@ async function startWorker() {
         }
         const fileBuffer = Buffer.concat(chunks);
 
-        // --- THE MULTI-FORMAT ROUTER ---
+        // --- THE NEW MULTIMODAL AI ROUTER ---
         const extension = job.originalName.split('.').pop().toLowerCase();
         let extractedText = "";
 
         console.log(`🔍 Detected file type: .${extension}`);
 
-        if (['png', 'jpg', 'jpeg'].includes(extension)) {
-          console.log(`🖼️ Running Tesseract OCR engine on ${job.originalName}...`);
-          const { data: { text } } = await Tesseract.recognize(fileBuffer, 'eng');
-          extractedText = text;
-
-        } else if (extension === 'pdf') {
-          console.log(`📄 Parsing PDF Document: ${job.originalName}...`);
-          const pdfData = await extractPdf(fileBuffer);
-          extractedText = pdfData.text;
-
-        } else if (['txt', 'csv'].includes(extension)) {
-          console.log(`📝 Reading raw text file: ${job.originalName}...`);
+        // Keep a fast-path for standard text documents to save AI costs
+        if (['txt', 'csv'].includes(extension)) {
+          console.log(`📝 Reading raw text file directly...`);
           extractedText = fileBuffer.toString('utf-8');
+        } 
+        // Route Images and PDFs to Gemini 1.5 Flash
+        else {
+          console.log(`🧠 Sending ${job.originalName} to Google AI Studio...`);
+          
+          let mimeType = 'image/jpeg';
+          if (extension === 'pdf') mimeType = 'application/pdf';
+          else if (extension === 'png') mimeType = 'image/png';
+          else if (extension === 'webp') mimeType = 'image/webp';
 
-        } else {
-          throw new Error(`Unsupported file format: .${extension}`);
+          const fileBase64 = fileBuffer.toString('base64');
+          const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+          
+          const prompt = `You are an enterprise data extraction engine. Extract all text, tabular data, and key-value pairs from this document accurately. Format the output as clean, structured text. Do not add any conversational filler.`;
+          
+          const documentPart = {
+              inlineData: {
+                  data: fileBase64,
+                  mimeType: mimeType
+              }
+          };
+
+          const result = await model.generateContent([prompt, documentPart]);
+          extractedText = result.response.text();
         }
 
-        console.log(`✅ Scan complete! Extracted ${extractedText.length} characters.`);
+        console.log(`✅ AI Extraction complete! Extracted ${extractedText.length} characters.`);
 
         // --- Save the FULL text to MongoDB ---
         await ExtractedData.create({
@@ -193,20 +192,10 @@ async function startWorker() {
 startWorker();
 
 // -------------------------------------------------
-// Render Free Tier Hack
-// -------------------------------------------------
-// const PORT = process.env.PORT || 10000;
-// http.createServer((req, res) => {
-//   res.writeHead(200);
-//   res.end('OCR Worker is actively listening to Redis!');
-// }).listen(PORT, () => console.log(`🛡️ Render Free Tier Hack active on port ${PORT}`));
-
-// -------------------------------------------------
 // Render Free Tier Hack (Cron-Job.org Safe)
 // -------------------------------------------------
-const PORT = process.env.PORT || 10001; // Note: Use 10001 for webhookWorker
+const PORT = process.env.PORT || 10001; 
 http.createServer((req, res) => {
-  // Send a perfectly formatted, tiny response so cron-job doesn't hang
   res.writeHead(200, { 
     'Content-Type': 'text/plain',
     'Content-Length': '2'
