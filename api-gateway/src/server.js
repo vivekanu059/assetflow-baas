@@ -92,7 +92,7 @@ export const logger = winston.createLogger({
 });
 
 // -------------------------------------------------
-// 5. Express App Setup & Routes
+// 5. Express App Setup
 // -------------------------------------------------
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -114,35 +114,6 @@ app.use((req, res, next) => {
   logger.info(`[${req.traceId}] Incoming ${req.method} request to ${req.url}`);
   next();
 });
-
-// --- API RATE LIMITER (Token Bucket via Redis) ---
-// Protects your backend and AI billing from DDOS or accidental infinite loops
-const apiLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000, // 1 minute window
-  max: 60, // Limit each IP to 60 requests per window
-  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
-  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
-  store: new RedisStore({
-    // Send the command directly to your existing Upstash Redis instance
-    sendCommand: (...args) => redisClient.sendCommand(args),
-  }),
-  message: { 
-    error: "Too many requests from this IP. Please slow down to protect system resources.",
-    status: 429
-  },
-  handler: (req, res, next, options) => {
-    logger.warn(`[${req.traceId}] RATE LIMIT TRIGGERED for IP: ${req.ip}`);
-    res.status(options.statusCode).send(options.message);
-  }
-});
-
-// Apply the rate limiter strictly to all /api routes
-app.use('/api', apiLimiter);
-
-// API Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/assets', assetRoutes);
-app.use('/api/user', userRoutes);
 
 // Basic Health Check Route (Un-metered so Ping services don't hit the rate limit)
 app.get('/health', (req, res) => {
@@ -167,7 +138,33 @@ async function startServer() {
     await prisma.$connect();
     logger.info('✅ PostgreSQL Connected (Users & Auth)');
 
-    // 4. ONLY start listening once ALL databases are secured
+    // 🛡️ 4. ONLY initialize rate limiter AFTER Redis is fully connected!
+    const apiLimiter = rateLimit({
+      windowMs: 1 * 60 * 1000, // 1 minute window
+      max: 60, // Limit each IP to 60 requests per window
+      standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
+      legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+      store: new RedisStore({
+        // Send the command directly to your existing Upstash Redis instance
+        sendCommand: (...args) => redisClient.sendCommand(args),
+      }),
+      message: { 
+        error: "Too many requests from this IP. Please slow down to protect system resources.",
+        status: 429
+      },
+      handler: (req, res, next, options) => {
+        logger.warn(`[${req.traceId}] RATE LIMIT TRIGGERED for IP: ${req.ip}`);
+        res.status(options.statusCode).send(options.message);
+      }
+    });
+
+    // 5. Attach the limiter and routes NOW that everything is online
+    app.use('/api', apiLimiter);
+    app.use('/api/auth', authRoutes);
+    app.use('/api/assets', assetRoutes);
+    app.use('/api/user', userRoutes);
+
+    // 6. ONLY start listening once ALL databases are secured
     app.listen(PORT, () => {
       logger.info(`🚀 API Gateway running on port ${PORT}`);
     });
