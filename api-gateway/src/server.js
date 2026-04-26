@@ -10,6 +10,12 @@ const { PrismaClient } = pkg;
 import pg from 'pg';
 import { PrismaPg } from '@prisma/adapter-pg';
 
+// --- NEW ENTERPRISE IMPORTS ---
+import { v4 as uuidv4 } from 'uuid';
+import winston from 'winston';
+import rateLimit from 'express-rate-limit';
+import RedisStore from 'rate-limit-redis';
+
 import authRoutes from './routes/auth.js';
 import assetRoutes from './routes/assets.js';
 import userRoutes from './routes/user.js';
@@ -25,7 +31,7 @@ const adapter = new PrismaPg(pool);
 export const prisma = new PrismaClient({ adapter });
 
 // -------------------------------------------------
-// 2. Initialize Redis (Task Queue)
+// 2. Initialize Redis (Task Queue & Rate Limiter)
 // -------------------------------------------------
 export const redisClient = createClient({ 
   url: process.env.REDIS_URL,
@@ -65,7 +71,28 @@ export const minioClient = new Minio.Client({
 });
 
 // -------------------------------------------------
-// 4. Express App Setup & Routes
+// 4. Enterprise Observability (Winston Logger)
+// -------------------------------------------------
+export const logger = winston.createLogger({
+  level: 'info',
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.json()
+  ),
+  transports: [
+    new winston.transports.Console({
+      format: winston.format.combine(
+        winston.format.colorize(),
+        winston.format.printf(({ timestamp, level, message }) => {
+          return `${timestamp} [${level}]: ${message}`;
+        })
+      ),
+    })
+  ],
+});
+
+// -------------------------------------------------
+// 5. Express App Setup & Routes
 // -------------------------------------------------
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -80,40 +107,73 @@ app.use(cors({
 }));
 app.use(express.json());
 
+// --- DISTRIBUTED TRACING MIDDLEWARE ---
+// Generates a unique UUID for every incoming request and attaches it to req.traceId
+app.use((req, res, next) => {
+  req.traceId = uuidv4();
+  logger.info(`[${req.traceId}] Incoming ${req.method} request to ${req.url}`);
+  next();
+});
+
+// --- API RATE LIMITER (Token Bucket via Redis) ---
+// Protects your backend and AI billing from DDOS or accidental infinite loops
+const apiLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute window
+  max: 60, // Limit each IP to 60 requests per window
+  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
+  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+  store: new RedisStore({
+    // Send the command directly to your existing Upstash Redis instance
+    sendCommand: (...args) => redisClient.sendCommand(args),
+  }),
+  message: { 
+    error: "Too many requests from this IP. Please slow down to protect system resources.",
+    status: 429
+  },
+  handler: (req, res, next, options) => {
+    logger.warn(`[${req.traceId}] RATE LIMIT TRIGGERED for IP: ${req.ip}`);
+    res.status(options.statusCode).send(options.message);
+  }
+});
+
+// Apply the rate limiter strictly to all /api routes
+app.use('/api', apiLimiter);
+
 // API Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/assets', assetRoutes);
 app.use('/api/user', userRoutes);
 
-// Basic Health Check Route
+// Basic Health Check Route (Un-metered so Ping services don't hit the rate limit)
 app.get('/health', (req, res) => {
+  logger.info(`[${req.traceId}] Health check pinged.`);
   res.status(200).json({ status: 'OK', message: 'AssetFlow API Gateway is running' });
 });
 
 // -------------------------------------------------
-// 5. Strict Boot Sequence (No Race Conditions)
+// 6. Strict Boot Sequence (No Race Conditions)
 // -------------------------------------------------
 async function startServer() {
   try {
     // 1. Connect to MongoDB
     await mongoose.connect(process.env.MONGO_URI);
-    console.log('✅ MongoDB securely connected for AI logs');
+    logger.info('✅ MongoDB securely connected for AI logs');
 
     // 2. Connect to Redis
     await redisClient.connect();
-    // (The success log is handled by the .on('connect') event above)
+    logger.info('✅ Upstash Redis task queue active');
 
     // 3. Connect to PostgreSQL
     await prisma.$connect();
-    console.log('✅ PostgreSQL Connected (Users & Auth)');
+    logger.info('✅ PostgreSQL Connected (Users & Auth)');
 
     // 4. ONLY start listening once ALL databases are secured
     app.listen(PORT, () => {
-      console.log(`🚀 API Gateway running on port ${PORT}`);
+      logger.info(`🚀 API Gateway running on port ${PORT}`);
     });
 
   } catch (error) {
-    console.error('❌ CRITICAL: Failed to start server:', error);
+    logger.error(`❌ CRITICAL: Failed to start server: ${error.message}`);
     process.exit(1);
   }
 }

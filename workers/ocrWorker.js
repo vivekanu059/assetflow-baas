@@ -92,9 +92,13 @@ async function startWorker() {
       
       if (jobString) {
         const job = JSON.parse(jobString);
-        console.log(`\n📦 Picked up job for Asset ID: ${job.assetId}`);
+        
+        // Extract the traceId, fallback if it somehow missing
+        const traceId = job.traceId || 'NO-TRACE';
 
-        console.log(`⬇️ Downloading ${job.originalName} from storage...`);
+        console.log(`\n[${traceId}] 📦 Picked up job for Asset ID: ${job.assetId}`);
+        console.log(`[${traceId}] ⬇️ Downloading ${job.originalName} from storage...`);
+        
         const dataStream = await minioClient.getObject('raw-assets', job.minioUrl);
         
         const chunks = [];
@@ -107,16 +111,16 @@ async function startWorker() {
         const extension = job.originalName.split('.').pop().toLowerCase();
         let extractedText = "";
 
-        console.log(`🔍 Detected file type: .${extension}`);
+        console.log(`[${traceId}] 🔍 Detected file type: .${extension}`);
 
         // Keep a fast-path for standard text documents to save AI costs
         if (['txt', 'csv'].includes(extension)) {
-          console.log(`📝 Reading raw text file directly...`);
+          console.log(`[${traceId}] 📝 Reading raw text file directly...`);
           extractedText = fileBuffer.toString('utf-8');
         } 
         // Route Images and PDFs to Gemini 1.5 Flash
         else {
-          console.log(`🧠 Sending ${job.originalName} to Google AI Studio...`);
+          console.log(`[${traceId}] 🧠 Sending ${job.originalName} to Google AI Studio...`);
           
           let mimeType = 'image/jpeg';
           if (extension === 'pdf') mimeType = 'application/pdf';
@@ -139,7 +143,7 @@ async function startWorker() {
           extractedText = result.response.text();
         }
 
-        console.log(`✅ AI Extraction complete! Extracted ${extractedText.length} characters.`);
+        console.log(`[${traceId}] ✅ AI Extraction complete! Extracted ${extractedText.length} characters.`);
 
         // --- Save the FULL text to MongoDB ---
         await ExtractedData.create({
@@ -149,13 +153,14 @@ async function startWorker() {
           extractedText: extractedText 
         });
         
-        console.log(`💾 Full document text securely saved to MongoDB.`);
+        console.log(`[${traceId}] 💾 Full document text securely saved to MongoDB.`);
         
-        console.log(`🔔 Notifying Webhook Worker...`);
+        console.log(`[${traceId}] 🔔 Notifying Webhook Worker...`);
         await redisClient.lPush('webhook_queue', JSON.stringify({
             assetId: job.assetId,
             status: 'COMPLETED',
-            attempt: 1
+            attempt: 1,
+            traceId: traceId // 👈 Passing the trace baton to the Webhook Worker!
         }));
 
         // Update Postgres to COMPLETED
@@ -163,7 +168,7 @@ async function startWorker() {
           where: { id: job.assetId },
           data: { status: 'COMPLETED' }
         });
-        console.log(`📻 BROADCASTING TO REDIS: asset_updates for user ${job.userId}`);
+        console.log(`[${traceId}] 📻 BROADCASTING TO REDIS: asset_updates for user ${job.userId}`);
         console.log(`------------------------------\n`);
      } else {
         // QUEUE IS EMPTY: Sleep for 2 seconds to let Upstash breathe
@@ -171,17 +176,21 @@ async function startWorker() {
       }
       
     } catch (error) {
-      console.error('❌ Error processing job:', error);
       if (jobString) {
         try {
           const failedJob = JSON.parse(jobString);
+          const traceId = failedJob.traceId || 'NO-TRACE';
+          console.error(`[${traceId}] ❌ Error processing job:`, error.message);
+          
           await prisma.asset.update({
             where: { id: failedJob.assetId },
             data: { status: 'FAILED' }
           });
         } catch (e) {
-          console.error('Could not update database to FAILED state');
+          console.error('❌ Could not update database to FAILED state');
         }
+      } else {
+        console.error('❌ Error processing job (No Job Data):', error.message);
       }
       // Wait before retrying after an error
       await new Promise(resolve => setTimeout(resolve, 3000));
